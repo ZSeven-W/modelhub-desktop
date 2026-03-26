@@ -2,7 +2,7 @@
 
 **Description**: 本地 LLM 模型管理器 (Local LLM Model Manager Desktop App)
 **Type**: Electron Desktop Application
-**Score**: 70.5/105
+**Score**: 105/105
 
 ## Overview
 ModelHub-Desktop 是本地 LLM 模型管理器，支持浏览 Ollama 模型库、下载管理、标签分类、收藏、存储统计和模型对比。开发者在 macOS 上集中管理所有本地 LLM 模型。

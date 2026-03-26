@@ -6,9 +6,12 @@ let viewMode = 'grid';
 let installedModels = [];
 let browseModels = [];
 let tags = [];
-let downloads = {}; // name -> { progress, status, done }
-let pullTimers = {};
+let downloads = {}; // name -> { progress, status, done, dl_id }
 let compareSelected = [];
+let bulkSelected = new Set();
+let modelTags = {}; // modelName -> [{id, name, color}]
+let eventSource = null;
+let isLoading = true;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -19,15 +22,82 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupTagModal();
   setupCompareOverlay();
   setupDetailOverlay();
+  setupKeyboardShortcuts();
 
+  // Show loading, wait for backend
+  showLoading(true);
+  const ready = await waitForBackend(30);
+  showLoading(false);
+
+  if (!ready) {
+    showToast('后端启动失败，请重试', 'error');
+  }
+
+  isLoading = false;
   await checkOllama();
   await loadInstalledModels();
   await loadTags();
+  connectSSE();
   await checkDownloads();
-
-  // Poll for download progress
-  setInterval(checkDownloads, 2000);
 });
+
+function showLoading(show) {
+  const overlay = document.getElementById('loading-overlay');
+  if (overlay) {
+    overlay.style.display = show ? 'flex' : 'none';
+  }
+}
+
+async function waitForBackend(maxSeconds) {
+  for (let i = 0; i < maxSeconds; i++) {
+    try {
+      const resp = await fetch(`${API_BASE}/api/health`);
+      if (resp.ok) return true;
+    } catch (e) { /* not ready yet */ }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close();
+  }
+  eventSource = new EventSource(`${API_BASE}/api/pulls/stream`);
+  eventSource.addEventListener('progress', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      downloads[data.name] = data;
+      renderDownloads();
+    } catch (err) { /* ignore parse errors */ }
+  });
+  eventSource.onerror = () => {
+    // Reconnect after 5s
+    setTimeout(() => {
+      if (!isLoading) connectSSE();
+    }, 5000);
+  };
+}
+
+// ─── Keyboard Shortcuts ────────────────────────────────────────────────────────
+function setupKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    const isMac = navigator.platform.includes('Mac');
+    const mod = isMac ? e.metaKey : e.ctrlKey;
+
+    if (mod && e.key === 'k') {
+      e.preventDefault();
+      document.getElementById('search-input').focus();
+    } else if (mod && e.key === 'r') {
+      e.preventDefault();
+      document.getElementById('sync-btn').click();
+    } else if (e.key === 'Escape') {
+      closeDetailOverlay();
+      closeCompareOverlay();
+      closeTagModal();
+    }
+  });
+}
 
 // ─── Navigation ────────────────────────────────────────────────────────────────
 function setupNavigation() {
@@ -37,7 +107,6 @@ function setupNavigation() {
       switchView(view);
 
       if (view === 'browse' && browseModels.length === 0) {
-        // Load featured models
         await searchBrowse('llama');
       }
       if (view === 'storage') {
@@ -45,6 +114,9 @@ function setupNavigation() {
       }
       if (view === 'tags') {
         await loadTags();
+      }
+      if (view === 'history') {
+        await loadDownloadHistory();
       }
     });
   });
@@ -115,7 +187,6 @@ function renderInstalledModels() {
   });
 
   if (sortBy === 'size') {
-    // Sort by size string (rough numeric conversion)
     models.sort((a, b) => {
       const toNum = (s) => {
         if (!s) return 0;
@@ -147,13 +218,69 @@ function renderInstalledModels() {
     card.querySelector('.card-delete')?.addEventListener('click', (e) => { e.stopPropagation(); confirmDeleteModel(name); });
     card.querySelector('.card-compare')?.addEventListener('click', (e) => { e.stopPropagation(); toggleCompare(name); });
     card.querySelector('.card-openfolder')?.addEventListener('click', (e) => { e.stopPropagation(); openModelFolder(name); });
+
+    // Bulk select checkbox
+    card.querySelector('.card-checkbox')?.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (e.target.checked) {
+        bulkSelected.add(name);
+      } else {
+        bulkSelected.delete(name);
+      }
+      updateBulkBar();
+    });
   });
+
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const bar = document.getElementById('bulk-action-bar');
+  const count = document.getElementById('bulk-count');
+  if (bar) {
+    bar.style.display = bulkSelected.size > 0 ? 'flex' : 'none';
+    if (count) count.textContent = bulkSelected.size;
+  }
+}
+
+async function bulkDelete() {
+  if (bulkSelected.size === 0) return;
+  const names = [...bulkSelected];
+  if (!confirm(`确定要删除 ${names.length} 个模型吗？`)) return;
+  showToast(`删除 ${names.length} 个模型中...`, '');
+  let failed = 0;
+  for (const name of names) {
+    const resp = await api.delete(`/api/models/${encodeURIComponent(name)}`);
+    if (resp.success) {
+      installedModels = installedModels.filter(m => m.name !== name);
+      bulkSelected.delete(name);
+    } else {
+      failed++;
+    }
+  }
+  renderInstalledModels();
+  showToast(`${names.length - failed} 个已删除${failed > 0 ? `, ${failed} 个失败` : ''}`, failed > 0 ? 'error' : 'success');
+}
+
+function selectAllModels() {
+  installedModels.forEach(m => bulkSelected.add(m.name));
+  renderInstalledModels();
+}
+
+function clearSelection() {
+  bulkSelected.clear();
+  renderInstalledModels();
 }
 
 function modelCardHTML(m, isBrowse = false) {
   const favClass = m.is_favorite ? 'active' : '';
+  const isSelected = bulkSelected.has(m.name);
+  const cardTags = modelTags[m.name] || [];
   return `
-    <div class="model-card ${isBrowse ? 'browse-card' : ''}" data-name="${m.name}">
+    <div class="model-card ${isBrowse ? 'browse-card' : ''} ${isSelected ? 'selected' : ''}" data-name="${m.name}">
+      ${!isBrowse ? `<div class="card-checkbox-wrap">
+        <input type="checkbox" class="card-checkbox" data-name="${m.name}" ${isSelected ? 'checked' : ''}>
+      </div>` : ''}
       ${m.is_favorite ? '<div class="favorite-star active">★</div>' : '<div class="favorite-star">☆</div>'}
       <div class="model-card-header">
         <div class="model-icon">
@@ -221,6 +348,9 @@ function modelCardHTML(m, isBrowse = false) {
           ${m.size}
         </div>` : ''}
       </div>
+      ${cardTags.length > 0 ? `<div class="model-card-tags">${cardTags.map(t =>
+        `<span class="tag-pill" style="background:${t.color}22;color:${t.color};border-color:${t.color}44">${t.name}</span>`
+      ).join('')}</div>` : ''}
       ${isBrowse && m.description ? `<div class="model-description">${m.description}</div>` : ''}
       <div class="model-badges">
         ${m.parameters ? `<span class="badge blue">${m.parameters}</span>` : ''}
@@ -310,22 +440,45 @@ async function checkDownloads() {
 }
 
 async function pullModel(name) {
-  if (downloads[name] && !downloads[name].done) {
+  const existing = downloads[name];
+  if (existing && !existing.done) {
     showToast('已经在下载中', '');
     return;
   }
 
-  showToast(`开始下载: ${name}`, '');
-  downloads[name] = { progress: 0, status: 'starting', done: false };
+  const queued = existing && existing.status === 'queued';
+  showToast(queued ? `已在队列中: ${name}` : `开始下载: ${name}`, '');
+  downloads[name] = { progress: 0, status: queued ? 'queued' : 'starting', done: false };
 
   const resp = await api.post('/api/models/pull', { name });
   if (resp.success) {
     switchView('downloads');
     renderDownloads();
+    // Show notification when done (via SSE/periodic check)
+    checkDownloadComplete(name);
   } else {
     showToast('下载失败: ' + resp.error, 'error');
     delete downloads[name];
   }
+}
+
+async function checkDownloadComplete(name) {
+  // Watch for completion and notify
+  const check = setInterval(() => {
+    const d = downloads[name];
+    if (d && d.done) {
+      clearInterval(check);
+      if (d.status === 'done') {
+        api.notify('下载完成', `${name} 已成功下载`);
+        showToast(`✓ 下载完成: ${name}`, 'success');
+      } else if (d.status === 'failed') {
+        showToast(`✗ 下载失败: ${name}`, 'error');
+      }
+    }
+    if (!downloads[name]) {
+      clearInterval(check);
+    }
+  }, 1000);
 }
 
 function renderDownloads() {
@@ -340,21 +493,44 @@ function renderDownloads() {
   }
 
   empty.style.display = 'none';
-  container.innerHTML = items.map(([name, d]) => `
+  container.innerHTML = items.map(([name, d]) => {
+    const statusClass = d.done ? (d.status === 'done' ? 'green' : d.status === 'cancelled' ? 'warning' : 'red') : 'blue';
+    const statusText = d.done ? (d.status === 'done' ? '✓ 完成' : d.status === 'cancelled' ? '✗ 已取消' : '✗ 失败') : `${d.progress}%`;
+    const showCancel = !d.done;
+    return `
     <div class="download-item">
       <div class="download-item-header">
         <span class="download-item-name">${name}</span>
-        <span class="badge ${d.done ? 'green' : 'blue'}">${d.done ? '已完成' : d.progress + '%'}</span>
+        <span class="badge ${statusClass}">${statusText}</span>
+        ${showCancel ? `<button class="btn-cancel-download" data-name="${name}" title="取消下载">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>` : ''}
       </div>
       <div class="download-progress-bar">
         <div class="download-progress-fill" style="width:${d.progress}%"></div>
       </div>
       <div class="download-status">
         <span>${d.status}</span>
-        ${!d.done ? '<div class="spinner"></div>' : '<span style="color:var(--success)">✓</span>'}
+        ${!d.done ? '<div class="spinner"></div>' : ''}
       </div>
     </div>
-  `).join('');
+  `}).join('');
+
+  // Bind cancel buttons
+  container.querySelectorAll('.btn-cancel-download').forEach(btn => {
+    btn.addEventListener('click', () => cancelDownload(btn.dataset.name));
+  });
+}
+
+async function cancelDownload(name) {
+  const resp = await api.post(`/api/models/pull/${encodeURIComponent(name)}/cancel`, {});
+  if (resp.success) {
+    showToast(`已取消: ${name}`, 'warning');
+    delete downloads[name];
+    renderDownloads();
+  }
 }
 
 // ─── Storage ───────────────────────────────────────────────────────────────────
@@ -363,6 +539,8 @@ async function loadStorage() {
   if (!resp.success) { showToast('加载存储信息失败', 'error'); return; }
 
   const data = resp.data;
+  const models = data.models || [];
+
   document.getElementById('storage-dashboard').innerHTML = `
     <div class="storage-summary">
       <div>
@@ -374,8 +552,18 @@ async function loadStorage() {
         <p style="font-size:12px;color:var(--text-subtle);font-family:var(--mono);margin-top:4px">~/.ollama/models</p>
       </div>
     </div>
+    <div class="storage-charts-row">
+      <div class="storage-chart-container">
+        <h4 style="font-size:13px;color:var(--text-muted);margin-bottom:12px">存储分布</h4>
+        <canvas id="storage-pie-chart" width="260" height="260"></canvas>
+      </div>
+      <div class="storage-chart-container">
+        <h4 style="font-size:13px;color:var(--text-muted);margin-bottom:12px">模型大小对比</h4>
+        <canvas id="storage-bar-chart" width="320" height="220"></canvas>
+      </div>
+    </div>
     <div class="storage-breakdown">
-      ${data.models.map(m => `
+      ${models.map(m => `
         <div class="storage-item">
           <span class="storage-item-name">${m.name}</span>
           <span class="storage-item-size">${m.size_formatted}</span>
@@ -383,6 +571,111 @@ async function loadStorage() {
       `).join('')}
     </div>
   `;
+
+  // Render charts
+  if (models.length > 0) {
+    renderStorageCharts(models, data.total);
+  }
+}
+
+function renderStorageCharts(models, total) {
+  // Pie chart
+  const pieCtx = document.getElementById('storage-pie-chart');
+  if (pieCtx && window.Chart) {
+    const colors = ['#3b82f6', '#a855f7', '#3fb950', '#f59e0b', '#f85149', '#06b6d4', '#ec4899', '#84cc16'];
+    new window.Chart(pieCtx, {
+      type: 'doughnut',
+      data: {
+        labels: models.map(m => m.name),
+        datasets: [{
+          data: models.map(m => m.size),
+          backgroundColor: models.map((_, i) => colors[i % colors.length]),
+          borderWidth: 0,
+        }]
+      },
+      options: {
+        responsive: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#8b949e', boxWidth: 10, font: { size: 10 } }
+          }
+        }
+      }
+    });
+  }
+
+  // Bar chart
+  const barCtx = document.getElementById('storage-bar-chart');
+  if (barCtx && window.Chart) {
+    const colors = ['#3b82f6', '#a855f7', '#3fb950', '#f59e0b', '#f85149', '#06b6d4', '#ec4899', '#84cc16'];
+    new window.Chart(barCtx, {
+      type: 'bar',
+      data: {
+        labels: models.map(m => m.name.split(':')[0]),
+        datasets: [{
+          label: '大小',
+          data: models.map(m => m.size),
+          backgroundColor: models.map((_, i) => colors[i % colors.length] + 'cc'),
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        responsive: false,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            ticks: { color: '#8b949e', callback: (v) => formatBytesShort(v) },
+            grid: { color: '#21262d' }
+          },
+          y: {
+            ticks: { color: '#8b949e', font: { size: 10 } },
+            grid: { display: false }
+          }
+        }
+      }
+    });
+  }
+}
+
+function formatBytesShort(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + 'KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(0) + 'MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'GB';
+}
+
+// ─── Download History ───────────────────────────────────────────────────────────
+async function loadDownloadHistory() {
+  const resp = await api.get('/api/downloads');
+  if (!resp.success) { showToast('加载下载历史失败', 'error'); return; }
+
+  const history = resp.data || [];
+  const container = document.getElementById('download-history-list');
+  const empty = document.getElementById('download-history-empty');
+
+  if (history.length === 0) {
+    container.innerHTML = '';
+    empty.style.display = 'flex';
+    return;
+  }
+
+  empty.style.display = 'none';
+  container.innerHTML = history.map(d => {
+    const statusClass = d.status === 'done' ? 'green' : d.status === 'cancelled' ? 'warning' : d.status === 'failed' ? 'red' : 'blue';
+    const statusText = d.status === 'done' ? '✓ 成功' : d.status === 'cancelled' ? '✕ 已取消' : d.status === 'failed' ? '✕ 失败' : '...进行中';
+    return `
+      <div class="download-history-item">
+        <div class="download-history-name">${d.name}</div>
+        <div class="download-history-meta">
+          <span class="badge ${statusClass}">${statusText}</span>
+          <span style="font-size:12px;color:var(--text-subtle)">${d.size || '-'}</span>
+          <span style="font-size:11px;color:var(--text-subtle)">${d.created_at ? new Date(d.created_at).toLocaleString() : ''}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 // ─── Tags ──────────────────────────────────────────────────────────────────────
@@ -496,19 +789,27 @@ async function showModelDetail(name) {
   document.getElementById('detail-overlay').style.display = 'flex';
   document.getElementById('detail-body').innerHTML = '<div class="empty-state" style="padding:40px"><div class="spinner"></div></div>';
 
-  const [infoResp, mfResp] = await Promise.all([
+  const [infoResp, mfResp, tagsResp] = await Promise.all([
     api.get(`/api/models/${encodeURIComponent(name)}/info`),
     api.get(`/api/models/${encodeURIComponent(name)}/modelfile`),
+    api.get(`/api/models/${encodeURIComponent(name)}/tags`),
   ]);
 
   const m = installedModels.find(m => m.name === name) || {};
   const info = infoResp.success ? infoResp.data : {};
   const mf = mfResp.success ? mfResp.data : {};
+  const modelTagList = tagsResp.success ? tagsResp.data : [];
+  modelTags[name] = modelTagList;
+
+  // Parse context length and capabilities from info
+  const contextLen = info.context_length || info.contextlength || (info.raw ? info.raw.match(/context length[\s:]*(\d+)/i)?.[1] : null) || null;
+  const capabilities = info.capabilities || info.system || '';
 
   document.getElementById('detail-body').innerHTML = `
     <div class="detail-actions" style="margin-bottom:20px">
       <button class="btn-primary" onclick="launchModel('${name}')">▶ 运行模型</button>
       <button class="btn-secondary" onclick="openModelFolder('${name}')">📁 打开目录</button>
+      <button class="btn-secondary" onclick="copyRunCommand('${name}')">📋 复制命令</button>
       <button class="btn-danger btn-sm" onclick="confirmDeleteModel('${name}'); closeDetailOverlay();">🗑 删除</button>
     </div>
 
@@ -520,8 +821,28 @@ async function showModelDetail(name) {
         ${m.parameters ? `<div class="detail-item"><span class="detail-item-label">参数量</span><span class="detail-item-value">${m.parameters}</span></div>` : ''}
         ${m.quantization ? `<div class="detail-item"><span class="detail-item-label">量化</span><span class="detail-item-value">${m.quantization}</span></div>` : ''}
         ${m.size ? `<div class="detail-item"><span class="detail-item-label">大小</span><span class="detail-item-value">${m.size}</span></div>` : ''}
-        ${info.modelfile ? `<div class="detail-item"><span class="detail-item-label">系统</span><span class="detail-item-value">${info.system || '-'}</span></div>` : ''}
-        ${info.capabilities ? `<div class="detail-item"><span class="detail-item-label">能力</span><span class="detail-item-value">${info.capabilities}</span></div>` : ''}
+        ${contextLen ? `<div class="detail-item"><span class="detail-item-label">上下文长度</span><span class="detail-item-value">${parseInt(contextLen).toLocaleString()}</span></div>` : ''}
+      </div>
+    </div>
+
+    ${modelTagList.length > 0 ? `
+    <div class="detail-section">
+      <h4>标签</h4>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+        ${modelTagList.map(t => `<span class="tag-pill" style="background:${t.color}22;color:${t.color};border-color:${t.color}44">${t.name}
+          <button onclick="removeModelTag('${name}', ${t.id})" style="background:none;border:none;cursor:pointer;color:inherit;padding:0 0 0 4px;font-size:11px">✕</button>
+        </span>`).join('')}
+      </div>
+    </div>
+    ` : ''}
+    <div class="detail-section">
+      <h4>添加标签</h4>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        ${tags.filter(t => !modelTagList.find(mt => mt.id === t.id)).map(t =>
+          `<button class="btn-tag-add" style="background:${t.color}22;color:${t.color};border:1px solid ${t.color}44;border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer"
+            onclick="addModelTag('${name}', ${t.id})">+ ${t.name}</button>`
+        ).join('')}
+        ${tags.length === 0 ? '<span style="font-size:12px;color:var(--text-subtle)">先去标签管理创建标签</span>' : ''}
       </div>
     </div>
 
@@ -539,6 +860,26 @@ async function showModelDetail(name) {
     </div>
     ` : ''}
   `;
+}
+
+async function addModelTag(modelName, tagId) {
+  const resp = await api.post(`/api/models/${encodeURIComponent(modelName)}/tags/${tagId}`, {});
+  if (resp.success) {
+    showModelDetail(modelName);
+  }
+}
+
+async function removeModelTag(modelName, tagId) {
+  const resp = await api.delete(`/api/models/${encodeURIComponent(modelName)}/tags/${tagId}`);
+  if (resp.success) {
+    showModelDetail(modelName);
+    renderInstalledModels();
+  }
+}
+
+function copyRunCommand(name) {
+  navigator.clipboard.writeText(`ollama run ${name}`);
+  showToast('命令已复制', 'success');
 }
 
 // ─── Compare ───────────────────────────────────────────────────────────────────
@@ -655,13 +996,6 @@ function showToast(msg, type = '') {
   toastTimer = setTimeout(() => toast.remove(), 3000);
 }
 
-// ─── Utils ─────────────────────────────────────────────────────────────────────
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // ─── Globals for inline onclick ────────────────────────────────────────────────
 window.toggleFavorite = toggleFavorite;
 window.launchModel = launchModel;
@@ -675,3 +1009,10 @@ window.createTag = createTag;
 window.closeTagModal = closeTagModal;
 window.pullModel = pullModel;
 window.toggleCompare = toggleCompare;
+window.addModelTag = addModelTag;
+window.removeModelTag = removeModelTag;
+window.copyRunCommand = copyRunCommand;
+window.bulkDelete = bulkDelete;
+window.selectAllModels = selectAllModels;
+window.clearSelection = clearSelection;
+window.cancelDownload = cancelDownload;

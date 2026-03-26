@@ -823,6 +823,169 @@ html, body {
   backdrop-filter: blur(4px);
 }
 
+/* ─── Loading Overlay ─────────────────────────────────────────────────────────── */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  flex-direction: column;
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.spinner.large {
+  width: 40px;
+  height: 40px;
+  border-width: 3px;
+}
+
+/* ─── Bulk Action Bar ─────────────────────────────────────────────────────────── */
+.bulk-action-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 50;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* ─── Model Card Enhancements ──────────────────────────────────────────────────── */
+.card-checkbox-wrap {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+}
+
+.card-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.model-card.selected {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.model-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid;
+}
+
+.btn-tag-add {
+  transition: all 0.15s;
+}
+
+.btn-tag-add:hover {
+  opacity: 0.8;
+}
+
+/* ─── Storage Charts ───────────────────────────────────────────────────────────── */
+.storage-charts-row {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.storage-chart-container {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* ─── Download History ─────────────────────────────────────────────────────────── */
+.download-history-item {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.download-history-name {
+  font-size: 14px;
+  font-weight: 500;
+  flex: 1;
+}
+
+.download-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.badge.red { background: rgba(248, 81, 73, 0.15); color: var(--danger); border-color: transparent; }
+
+/* ─── Download Item Enhancements ──────────────────────────────────────────────── */
+.download-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 10px;
+}
+
+.btn-cancel-download {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-cancel-download:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: white;
+}
+
 .modal {
   background: var(--bg-panel);
   border: 1px solid var(--border);

@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+import queue as threadq
+import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -20,6 +22,12 @@ PORT = 3357
 DATA_DIR = os.path.expanduser('~/.modelhub-desktop')
 DB_PATH = os.path.join(DATA_DIR, 'modelhub.db')
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# ─── Download Queue ────────────────────────────────────────────────────────────
+download_queue = threadq.Queue()
+pull_processes = {}  # name -> proc
+pull_lock = threading.Lock()  # Thread-safe lock for active_pulls
+MAX_CONCURRENT = 1  # Sequential downloads
 
 # ─── Database ──────────────────────────────────────────────────────────────────
 def get_db():
@@ -53,6 +61,14 @@ def init_db():
             PRIMARY KEY (model_id, tag_id),
             FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE CASCADE,
             FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            size TEXT,
+            status TEXT DEFAULT 'pending',
+            finished_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     ''')
     db.commit()
@@ -183,13 +199,16 @@ def search_ollama_library(query=''):
     return models
 
 def pull_model(name, progress_callback=None):
-    """Pull a model from Ollama library."""
+    """Pull a model from Ollama library. Returns (success, proc)."""
     proc = subprocess.Popen(
         ['ollama', 'pull', name],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
     )
+    
+    with pull_lock:
+        pull_processes[name] = proc
     
     progress = 0
     for line in proc.stdout:
@@ -205,7 +224,55 @@ def pull_model(name, progress_callback=None):
             progress_callback(progress, line)
     
     proc.wait()
+    with pull_lock:
+        if name in pull_processes:
+            del pull_processes[name]
+    
     return proc.returncode == 0
+
+
+# ─── Download Queue Worker ─────────────────────────────────────────────────────
+def process_download_queue():
+    """Worker thread: processes the download queue one at a time."""
+    while True:
+        item = download_queue.get()
+        if item is None:
+            break
+        name, dl_id = item
+        
+        def on_progress(progress, status):
+            with pull_lock:
+                active_pulls[name] = {
+                    'progress': progress,
+                    'status': status,
+                    'done': False,
+                    'dl_id': dl_id,
+                }
+        
+        success = pull_model(name, on_progress)
+        status = 'done' if success else 'failed'
+        
+        with pull_lock:
+            active_pulls[name] = {
+                'progress': 100 if success else active_pulls.get(name, {}).get('progress', 0),
+                'status': status,
+                'done': True,
+                'dl_id': dl_id,
+            }
+        
+        # Update download history
+        db = get_db()
+        db.execute(
+            'UPDATE downloads SET status=?, finished_at=CURRENT_TIMESTAMP WHERE id=?',
+            (status, dl_id)
+        )
+        db.commit()
+        db.close()
+        
+        if success:
+            sync_models_to_db()
+        
+        download_queue.task_done()
 
 def delete_model(name):
     """Delete a model."""
@@ -292,6 +359,10 @@ def sync_models_to_db():
 # ─── HTTP Server ───────────────────────────────────────────────────────────────
 active_pulls = {}  # name -> {'progress': int, 'status': str, 'done': bool}
 
+# Start queue worker
+queue_worker = threading.Thread(target=process_download_queue, daemon=True)
+queue_worker.start()
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, data, status=200):
         self.send_response(status)
@@ -299,6 +370,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+
+    def _send_sse_event(self, event_name, data):
+        """Send a Server-Sent Events message."""
+        self.wfile.write(f"event: {event_name}\n".encode())
+        self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
 
     def _parse_body(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -317,89 +393,182 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
-        
+
         try:
             if path == '/api/health':
                 self._send_json({'success': True, 'status': 'ok', 'time': datetime.now().isoformat()})
-            
+
             elif path == '/api/models':
                 db = get_db()
                 models = [dict(r) for r in db.execute('SELECT * FROM models ORDER BY name')]
                 db.close()
                 self._send_json({'success': True, 'data': models})
-            
+
             elif path.startswith('/api/models/') and path.endswith('/info'):
                 name = path.replace('/api/models/', '').replace('/info', '')
                 info = get_model_info(name)
                 self._send_json({'success': True, 'data': info})
-            
+
             elif path.startswith('/api/models/') and path.endswith('/modelfile'):
                 name = path.replace('/api/models/', '').replace('/modelfile', '')
                 mf = get_modelfile(name)
                 self._send_json({'success': True, 'data': mf})
-            
+
+            # Model tags
+            elif path.startswith('/api/models/') and '/tags' in path and path != '/api/models/tags':
+                parts = path.replace('/api/models/', '').split('/tags')
+                name = parts[0]
+                db = get_db()
+                model_row = db.execute('SELECT id FROM models WHERE name=?', (name,)).fetchone()
+                if model_row:
+                    tags = [dict(r) for r in db.execute('''
+                        SELECT t.* FROM tags t
+                        JOIN model_tags mt ON t.id = mt.tag_id
+                        WHERE mt.model_id=?
+                    ''', (model_row['id'],))]
+                    db.close()
+                    self._send_json({'success': True, 'data': tags})
+                else:
+                    db.close()
+                    self._send_json({'success': False, 'error': 'Model not found'}, 404)
+
             elif path == '/api/models/search':
                 q = query.get('q', [''])[0]
                 results = search_ollama_library(q)
                 self._send_json({'success': True, 'data': results})
-            
+
             elif path == '/api/tags':
                 db = get_db()
                 tags = [dict(r) for r in db.execute('SELECT * FROM tags ORDER BY name')]
                 db.close()
                 self._send_json({'success': True, 'data': tags})
-            
+
             elif path == '/api/storage':
                 stats = get_storage_stats()
                 self._send_json({'success': True, 'data': stats})
-            
+
+            elif path == '/api/downloads':
+                db = get_db()
+                downloads = [dict(r) for r in db.execute('SELECT * FROM downloads ORDER BY created_at DESC LIMIT 50')]
+                db.close()
+                self._send_json({'success': True, 'data': downloads})
+
+            # SSE stream for all active pulls
+            elif path == '/api/pulls/stream':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Connection', 'keep-alive')
+                self.end_headers()
+
+                # Send current state immediately
+                with pull_lock:
+                    for name, pull_data in active_pulls.items():
+                        self._send_sse_event('progress', {'name': name, **pull_data})
+
+                # Stream updates
+                last_state = {}
+                while True:
+                    try:
+                        time.sleep(0.5)
+                        with pull_lock:
+                            current_state = dict(active_pulls)
+                        for name, data in current_state.items():
+                            key = (name, data.get('progress'), data.get('status'), data.get('done'))
+                            if key != last_state.get(name):
+                                self._send_sse_event('progress', {'name': name, **data})
+                                last_state[name] = key
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+                return
+
             elif path.startswith('/api/pulls/'):
                 name = path.replace('/api/pulls/', '')
-                pull = active_pulls.get(name, {'progress': 0, 'status': 'idle', 'done': True})
+                with pull_lock:
+                    pull = active_pulls.get(name, {'progress': 0, 'status': 'idle', 'done': True})
                 self._send_json({'success': True, 'data': pull})
-            
+
             else:
                 self._send_json({'success': False, 'error': 'Not found'}, 404)
-        
+
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self._send_json({'success': False, 'error': str(e)}, 500)
 
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._parse_body()
-        
+
         try:
             if path == '/api/models/pull':
                 name = body.get('name')
                 if not name:
                     self._send_json({'success': False, 'error': 'Model name required'}, 400)
                     return
-                
-                if name in active_pulls and not active_pulls[name].get('done'):
+
+                with pull_lock:
+                    is_running = name in active_pulls and not active_pulls[name].get('done')
+                    in_queue_names = [n for n in download_queue.queue if n[0] == name]
+                    is_queued = bool(in_queue_names)
+
+                if is_running:
                     self._send_json({'success': True, 'data': {'status': 'already_running', 'name': name}})
                     return
-                
-                active_pulls[name] = {'progress': 0, 'status': 'starting', 'done': False}
-                
-                def do_pull():
-                    def on_progress(progress, line):
-                        active_pulls[name]['progress'] = progress
-                        active_pulls[name]['status'] = line
-                    
-                    success = pull_model(name, on_progress)
-                    active_pulls[name]['done'] = True
-                    active_pulls[name]['progress'] = 100 if success else active_pulls[name]['progress']
-                    active_pulls[name]['status'] = 'done' if success else 'failed'
-                    
-                    if success:
-                        sync_models_to_db()
-                
-                thread = threading.Thread(target=do_pull)
-                thread.start()
-                
-                self._send_json({'success': True, 'data': {'status': 'started', 'name': name}})
-            
+                if is_queued:
+                    self._send_json({'success': True, 'data': {'status': 'already_queued', 'name': name}})
+                    return
+
+                # Record in download history
+                db = get_db()
+                cursor = db.execute('INSERT INTO downloads (name, status) VALUES (?, ?)', (name, 'queued'))
+                dl_id = cursor.lastrowid
+                db.commit()
+                db.close()
+
+                with pull_lock:
+                    active_pulls[name] = {'progress': 0, 'status': 'queued', 'done': False, 'dl_id': dl_id}
+
+                download_queue.put((name, dl_id))
+
+                self._send_json({'success': True, 'data': {'status': 'queued', 'name': name, 'dl_id': dl_id}})
+
+            # Cancel download
+            elif path.startswith('/api/models/pull/') and path.endswith('/cancel'):
+                name = path.replace('/api/models/pull/', '').replace('/cancel', '')
+                cancelled = False
+                with pull_lock:
+                    if name in pull_processes:
+                        proc = pull_processes[name]
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        del pull_processes[name]
+                        cancelled = True
+
+                if cancelled:
+                    with pull_lock:
+                        active_pulls[name] = {
+                            'progress': active_pulls.get(name, {}).get('progress', 0),
+                            'status': 'cancelled',
+                            'done': True,
+                            'dl_id': active_pulls.get(name, {}).get('dl_id'),
+                        }
+                    # Update history
+                    db = get_db()
+                    dl_id = active_pulls.get(name, {}).get('dl_id')
+                    if dl_id:
+                        db.execute('UPDATE downloads SET status=? WHERE id=?', ('cancelled', dl_id))
+                        db.commit()
+                    db.close()
+                    self._send_json({'success': True, 'data': {'status': 'cancelled', 'name': name}})
+                else:
+                    self._send_json({'success': False, 'error': 'No active download found'}, 404)
+
             elif path.startswith('/api/models/') and path.endswith('/favorite'):
                 name = path.replace('/api/models/', '').replace('/favorite', '')
                 db = get_db()
@@ -413,14 +582,35 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     db.close()
                     self._send_json({'success': False, 'error': 'Model not found'}, 404)
-            
+
+            # Assign tag to model
+            elif path.startswith('/api/models/') and '/tags/' in path:
+                parts = path.replace('/api/models/', '').split('/tags/')
+                name = parts[0]
+                tag_id = int(parts[1])
+                db = get_db()
+                model_row = db.execute('SELECT id FROM models WHERE name=?', (name,)).fetchone()
+                if not model_row:
+                    db.close()
+                    self._send_json({'success': False, 'error': 'Model not found'}, 404)
+                    return
+                try:
+                    db.execute('INSERT INTO model_tags (model_id, tag_id) VALUES (?, ?)',
+                               (model_row['id'], tag_id))
+                    db.commit()
+                    db.close()
+                    self._send_json({'success': True, 'data': {'message': 'Tag assigned'}})
+                except sqlite3.IntegrityError:
+                    db.close()
+                    self._send_json({'success': False, 'error': 'Tag already assigned'}, 400)
+
             elif path == '/api/tags':
                 name = body.get('name')
                 color = body.get('color', '#3b82f6')
                 if not name:
                     self._send_json({'success': False, 'error': 'Tag name required'}, 400)
                     return
-                
+
                 db = get_db()
                 try:
                     cursor = db.execute('INSERT INTO tags (name, color) VALUES (?, ?)', (name, color))
@@ -431,7 +621,7 @@ class Handler(BaseHTTPRequestHandler):
                 except sqlite3.IntegrityError:
                     db.close()
                     self._send_json({'success': False, 'error': 'Tag already exists'}, 400)
-            
+
             elif path == '/api/models/compare':
                 names = body.get('names', [])
                 results = []
@@ -442,23 +632,38 @@ class Handler(BaseHTTPRequestHandler):
                     db.close()
                     results.append({**info, 'db': dict(row) if row else {}})
                 self._send_json({'success': True, 'data': results})
-            
+
             elif path == '/api/sync':
                 sync_models_to_db()
                 self._send_json({'success': True, 'data': {'message': 'Synced'}})
-            
+
             else:
                 self._send_json({'success': False, 'error': 'Not found'}, 404)
-        
+
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self._send_json({'success': False, 'error': str(e)}, 500)
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        
+
         try:
-            if path.startswith('/api/models/'):
+            if path.startswith('/api/models/') and '/tags/' in path:
+                parts = path.replace('/api/models/', '').split('/tags/')
+                name = parts[0]
+                tag_id = int(parts[1])
+                db = get_db()
+                model_row = db.execute('SELECT id FROM models WHERE name=?', (name,)).fetchone()
+                if model_row:
+                    db.execute('DELETE FROM model_tags WHERE model_id=? AND tag_id=?',
+                               (model_row['id'], tag_id))
+                    db.commit()
+                db.close()
+                self._send_json({'success': True})
+
+            elif path.startswith('/api/models/'):
                 name = path.replace('/api/models/', '')
                 result = delete_model(name)
                 if result['success']:
@@ -467,7 +672,7 @@ class Handler(BaseHTTPRequestHandler):
                     db.commit()
                     db.close()
                 self._send_json(result)
-            
+
             elif path.startswith('/api/tags/'):
                 tag_id = path.replace('/api/tags/', '')
                 db = get_db()
@@ -475,10 +680,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.commit()
                 db.close()
                 self._send_json({'success': True})
-            
+
             else:
                 self._send_json({'success': False, 'error': 'Not found'}, 404)
-        
+
         except Exception as e:
             self._send_json({'success': False, 'error': str(e)}, 500)
 

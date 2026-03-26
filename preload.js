@@ -11,4 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   launchTerminal: (modelName) => ipcRenderer.invoke('launch:terminal', modelName),
   openFolder: (path) => ipcRenderer.invoke('open:folder', path),
   openUrl: (url) => ipcRenderer.invoke('open:url', url),
+
+  // OS Notifications
+  notify: (title, body) => ipcRenderer.invoke('notification:show', { title, body }),
 });

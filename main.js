@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, Notification } = require('electron');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 const axios = require('axios');
@@ -126,6 +126,24 @@ function setupIpcHandlers() {
     } catch (err) {
       return { success: false, error: err.message };
     }
+  });
+
+  // OS Notifications
+  ipcMain.handle('notification:show', async (_, { title, body: bodyText }) => {
+    if (!Notification.isSupported()) return { success: false, error: 'Notifications not supported' };
+    const n = new Notification({
+      title,
+      body: bodyText,
+      icon: path.join(__dirname, 'public', 'icon.png'),
+    });
+    n.on('click', () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    n.show();
+    return { success: true };
   });
 
   // Launch model in Terminal
