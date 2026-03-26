@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ModelHub-Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect width="28" height="28" rx="8" fill="#3b82f6"/>
+            <path d="M7 8h14M7 14h14M7 20h8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="21" cy="20" r="3" fill="#fff"/>
+          </svg>
+          <span class="logo-text">ModelHub</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="installed">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+          </svg>
+          本地模型
+        </button>
+        <button class="nav-item" data-view="browse">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          浏览模型库
+        </button>
+        <button class="nav-item" data-view="downloads">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+          </svg>
+          下载管理
+        </button>
+        <button class="nav-item" data-view="storage">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+          </svg>
+          存储统计
+        </button>
+        <button class="nav-item" data-view="tags">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+            <line x1="7" y1="7" x2="7.01" y2="7"/>
+          </svg>
+          标签管理
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="ollama-status" id="ollama-status">
+          <span class="status-dot offline"></span>
+          <span class="status-text">Ollama 未运行</span>
+        </div>
+        <button class="btn-icon" id="sync-btn" title="刷新模型列表">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="search-bar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="search-input" placeholder="搜索模型...">
+        </div>
+        <div class="topbar-actions">
+          <div class="view-toggle">
+            <button class="view-btn active" data-view-mode="grid" title="网格视图">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+              </svg>
+            </button>
+            <button class="view-btn" data-view-mode="list" title="列表视图">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+                <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+                <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Views -->
+      <div class="content-area">
+        <!-- Installed Models View -->
+        <section class="view active" id="view-installed">
+          <div class="section-header">
+            <h2>本地模型</h2>
+            <div class="filter-bar">
+              <select id="filter-param">
+                <option value="">所有参数</option>
+                <option value="7b">7B</option>
+                <option value="8b">8B</option>
+                <option value="13b">13B</option>
+                <option value="33b">33B</option>
+                <option value="70b">70B</option>
+              </select>
+              <select id="filter-quant">
+                <option value="">所有量化</option>
+                <option value="q4_K_M">Q4_K_M</option>
+                <option value="q4_K_S">Q4_K_S</option>
+                <option value="q5_K_M">Q5_K_M</option>
+                <option value="q8_0">Q8_0</option>
+                <option value="q16">Q16</option>
+                <option value="f16">F16</option>
+              </select>
+              <select id="filter-sort">
+                <option value="name">按名称</option>
+                <option value="size">按大小</option>
+                <option value="date">按日期</option>
+              </select>
+            </div>
+          </div>
+          <div class="models-grid" id="installed-models">
+            <!-- Populated by JS -->
+          </div>
+          <div class="empty-state" id="installed-empty" style="display:none">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+              <path d="M9 9l6 6M15 9l-6 6"/>
+            </svg>
+            <p>没有找到本地模型</p>
+            <p class="sub">先从模型库下载，或确认 Ollama 已安装并有模型</p>
+          </div>
+        </section>
+
+        <!-- Browse Library View -->
+        <section class="view" id="view-browse">
+          <div class="section-header">
+            <h2>浏览模型库</h2>
+            <div class="search-bar inline">
+              <input type="text" id="browse-search-input" placeholder="搜索 Ollama 模型库...">
+              <button class="btn-primary" id="browse-search-btn">搜索</button>
+            </div>
+          </div>
+          <div class="models-grid" id="browse-models">
+            <!-- Populated by JS -->
+          </div>
+          <div class="empty-state" id="browse-empty" style="display:none">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            <p>搜索 Ollama 模型库</p>
+            <p class="sub">输入关键词搜索可用模型</p>
+          </div>
+        </section>
+
+        <!-- Downloads View -->
+        <section class="view" id="view-downloads">
+          <div class="section-header">
+            <h2>下载管理</h2>
+          </div>
+          <div class="downloads-list" id="downloads-list">
+            <!-- Populated by JS -->
+          </div>
+          <div class="empty-state" id="downloads-empty">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            <p>没有进行中的下载</p>
+            <p class="sub">从模型库浏览并下载模型</p>
+          </div>
+        </section>
+
+        <!-- Storage View -->
+        <section class="view" id="view-storage">
+          <div class="section-header">
+            <h2>存储统计</h2>
+          </div>
+          <div class="storage-dashboard" id="storage-dashboard">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+
+        <!-- Tags View -->
+        <section class="view" id="view-tags">
+          <div class="section-header">
+            <h2>标签管理</h2>
+            <button class="btn-primary" id="add-tag-btn">+ 新建标签</button>
+          </div>
+          <div class="tags-list" id="tags-list">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+
+        <!-- Compare View (modal overlay) -->
+        <div class="compare-overlay" id="compare-overlay" style="display:none">
+          <div class="compare-panel">
+            <div class="compare-header">
+              <h3>模型对比</h3>
+              <button class="btn-icon" id="close-compare-btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div class="compare-body" id="compare-body">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Model Detail (modal overlay) -->
+        <div class="detail-overlay" id="detail-overlay" style="display:none">
+          <div class="detail-panel">
+            <div class="detail-header">
+              <h3 id="detail-name">Model Name</h3>
+              <button class="btn-icon" id="close-detail-btn">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div class="detail-body" id="detail-body">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
