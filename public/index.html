@@ -147,10 +147,15 @@
                 <option value="q16">Q16</option>
                 <option value="f16">F16</option>
               </select>
+              <select id="filter-tag" title="按标签筛选">
+                <option value="">所有标签</option>
+              </select>
+              <button id="filter-favorites-btn" class="btn-icon" title="只看收藏" style="font-size:14px">⭐</button>
               <select id="filter-sort">
                 <option value="name">按名称</option>
                 <option value="size">按大小</option>
                 <option value="date">按日期</option>
+                <option value="last_used">按最近使用</option>
               </select>
             </div>
           </div>
@@ -192,6 +197,10 @@
         <section class="view" id="view-downloads">
           <div class="section-header">
             <h2>下载管理</h2>
+            <div style="display:flex;gap:8px">
+              <button class="btn-secondary btn-sm" id="queue-pause-btn">⏸ 暂停队列</button>
+              <button class="btn-secondary btn-sm" id="queue-resume-btn" style="display:none">▶ 继续队列</button>
+            </div>
           </div>
           <div class="downloads-list" id="downloads-list">
             <!-- Populated by JS -->
@@ -236,8 +245,13 @@
         <section class="view" id="view-tags">
           <div class="section-header">
             <h2>标签管理</h2>
-            <button class="btn-primary" id="add-tag-btn">+ 新建标签</button>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn-secondary" id="import-tags-btn">📥 导入</button>
+              <button class="btn-secondary" id="export-tags-btn">📤 导出</button>
+              <button class="btn-primary" id="add-tag-btn">+ 新建标签</button>
+            </div>
           </div>
+          <input type="file" id="import-file" accept=".json" style="display:none">
           <div class="tags-list" id="tags-list">
             <!-- Populated by JS -->
           </div>

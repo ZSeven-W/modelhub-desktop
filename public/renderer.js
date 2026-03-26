@@ -23,6 +23,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupCompareOverlay();
   setupDetailOverlay();
   setupKeyboardShortcuts();
+  setupImportExport();
+  setupQueueControls();
 
   // Show loading, wait for backend
   showLoading(true);
@@ -166,8 +168,29 @@ function setupSyncButton() {
 async function loadInstalledModels() {
   const resp = await api.get('/api/models');
   if (!resp.success) { showToast('加载失败: ' + resp.error, 'error'); return; }
-
   installedModels = resp.data || [];
+
+  // Load enhanced data (tags + last_used) in background
+  const enhancedResp = await api.get('/api/models/enhanced');
+  if (enhancedResp.success) {
+    const enhancedMap = {};
+    for (const m of enhancedResp.data) {
+      m.tag_names = m.tag_names ? m.tag_names.split(',') : [];
+      enhancedMap[m.name] = m;
+    }
+    for (const m of installedModels) {
+      const e = enhancedMap[m.name];
+      if (e) {
+        m.tag_names = e.tag_names;
+        m.last_used = e.last_used;
+        m.context_length = e.context_length;
+      } else {
+        m.tag_names = [];
+        m.last_used = null;
+      }
+    }
+  }
+
   renderInstalledModels();
 }
 
@@ -177,26 +200,40 @@ function renderInstalledModels() {
   const search = document.getElementById('search-input').value.toLowerCase();
   const filterParam = document.getElementById('filter-param').value;
   const filterQuant = document.getElementById('filter-quant').value;
+  const filterTag = document.getElementById('filter-tag')?.value || '';
   const sortBy = document.getElementById('filter-sort').value;
 
   let models = installedModels.filter(m => {
     const matchSearch = !search || m.name.toLowerCase().includes(search) || (m.tag || '').toLowerCase().includes(search);
     const matchParam = !filterParam || (m.parameters || '').toLowerCase().includes(filterParam);
     const matchQuant = !filterQuant || m.quantization === filterQuant;
-    return matchSearch && matchParam && matchQuant;
+    const matchFav = !favoritesOnly || m.is_favorite;
+    const matchTag = !filterTag || (m.tag_names && m.tag_names.includes(filterTag));
+    return matchSearch && matchParam && matchQuant && matchFav && matchTag;
   });
 
+  const toNum = (s) => {
+    if (!s) return 0;
+    const m = s.match(/([\d.]+)/);
+    const n = m ? parseFloat(m[1]) : 0;
+    return s.includes('GB') ? n * 1024 : n;
+  };
+
   if (sortBy === 'size') {
+    models.sort((a, b) => toNum(b.size) - toNum(a.size));
+  } else if (sortBy === 'last_used') {
     models.sort((a, b) => {
-      const toNum = (s) => {
-        if (!s) return 0;
-        const m = s.match(/([\d.]+)/);
-        const n = m ? parseFloat(m[1]) : 0;
-        return s.includes('GB') ? n * 1024 : n;
-      };
-      return toNum(b.size) - toNum(a.size);
+      const aTime = a.last_used ? new Date(a.last_used) : new Date(0);
+      const bTime = b.last_used ? new Date(b.last_used) : new Date(0);
+      return bTime - aTime;
     });
-  } else if (sortBy === 'name') {
+  } else if (sortBy === 'date') {
+    models.sort((a, b) => {
+      const aTime = a.created_at ? new Date(a.created_at) : new Date(0);
+      const bTime = b.created_at ? new Date(b.created_at) : new Date(0);
+      return bTime - aTime;
+    });
+  } else {
     models.sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -362,6 +399,8 @@ function modelCardHTML(m, isBrowse = false) {
 }
 
 // ─── Browse / Search ───────────────────────────────────────────────────────────
+let favoritesOnly = false;
+
 function setupSearch() {
   const input = document.getElementById('search-input');
   let debounce;
@@ -373,6 +412,17 @@ function setupSearch() {
   document.getElementById('filter-param').addEventListener('change', renderInstalledModels);
   document.getElementById('filter-quant').addEventListener('change', renderInstalledModels);
   document.getElementById('filter-sort').addEventListener('change', renderInstalledModels);
+  document.getElementById('filter-tag').addEventListener('change', renderInstalledModels);
+
+  // Favorites filter toggle
+  const favBtn = document.getElementById('filter-favorites-btn');
+  if (favBtn) {
+    favBtn.addEventListener('click', () => {
+      favoritesOnly = !favoritesOnly;
+      favBtn.style.opacity = favoritesOnly ? '1' : '0.4';
+      renderInstalledModels();
+    });
+  }
 
   // Browse search
   const browseInput = document.getElementById('browse-search-input');
@@ -684,6 +734,13 @@ async function loadTags() {
   if (!resp.success) return;
   tags = resp.data || [];
   renderTags();
+
+  // Populate tag filter dropdown
+  const tagFilter = document.getElementById('filter-tag');
+  if (tagFilter) {
+    tagFilter.innerHTML = '<option value="">所有标签</option>' +
+      tags.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+  }
 }
 
 function renderTags() {
@@ -859,7 +916,21 @@ async function showModelDetail(name) {
       <div class="modelfile-content">${escapeHtml(info.raw)}</div>
     </div>
     ` : ''}
+
+    <div class="detail-section" id="recommendations-section">
+      <h4>相似模型推荐</h4>
+      <div id="recommendations-container">
+        <span style="font-size:12px;color:var(--text-muted)">加载中...</span>
+      </div>
+    </div>
   `;
+
+  // Load recommendations
+  const recs = await loadRecommendations(name);
+  const container = document.getElementById('recommendations-container');
+  if (container) {
+    container.innerHTML = recs || '<span style="font-size:12px;color:var(--text-muted)">暂无推荐</span>';
+  }
 }
 
 async function addModelTag(modelName, tagId) {
@@ -916,29 +987,50 @@ async function showCompare() {
   document.getElementById('compare-overlay').style.display = 'flex';
   document.getElementById('compare-body').innerHTML = '<div class="empty-state" style="padding:40px"><div class="spinner"></div></div>';
 
-  const resp = await api.post('/api/models/compare', { names: compareSelected });
+  // Use enhanced compare endpoint
+  const params = compareSelected.map(n => `names=${encodeURIComponent(n)}`).join('&');
+  const resp = await api.get(`/api/models/compare-detailed?${params}`);
   if (!resp.success) {
     document.getElementById('compare-body').innerHTML = '<p>加载失败</p>';
     return;
   }
 
   const models = resp.data || [];
+
+  // Build side-by-side spec comparison table
+  const specFields = ['parameters', 'quantization', 'size', 'context_length', 'last_used'];
+  const specLabels = { parameters: '参数量', quantization: '量化', size: '大小', context_length: '上下文长度', last_used: '最近使用' };
+
   document.getElementById('compare-body').innerHTML = `
     <div class="compare-grid">
       ${models.map(m => `
         <div class="compare-card">
-          <h4>${m.name}</h4>
-          ${Object.entries(m.db).filter(([k]) => !['id', 'created_at'].includes(k)).map(([k, v]) => `
+          <h4 style="word-break:break-all">${m.name}</h4>
+          ${Object.entries(m.db).filter(([k]) => !['id', 'created_at', 'tag_names'].includes(k)).map(([k, v]) => `
             <div class="compare-row">
               <span class="compare-label">${k}</span>
               <span class="compare-value">${v || '-'}</span>
             </div>
           `).join('')}
+          ${m.context_length ? `<div class="compare-row"><span class="compare-label">context_length</span><span class="compare-value">${parseInt(m.context_length).toLocaleString()}</span></div>` : ''}
           ${m.capabilities ? `<div class="compare-row"><span class="compare-label">capabilities</span><span class="compare-value">${m.capabilities}</span></div>` : ''}
           ${m.system ? `<div class="compare-row"><span class="compare-label">system</span><span class="compare-value">${m.system}</span></div>` : ''}
         </div>
       `).join('')}
     </div>
+    ${models.some(m => m.modelfile) ? `
+    <div style="margin-top:24px">
+      <h4 style="margin-bottom:12px">Modelfile 对比</h4>
+      <div style="display:grid;grid-template-columns:repeat(${models.length},1fr);gap:12px">
+        ${models.map(m => `
+          <div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--accent)">${m.name}</div>
+            <pre class="modelfile-content" style="font-size:11px;max-height:300px;overflow:auto">${escapeHtml(m.modelfile || '(无)').replace(/\n/g, '<br>')}</pre>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
   `;
 }
 
@@ -979,6 +1071,81 @@ async function confirmDeleteModel(name) {
   } else {
     showToast('删除失败: ' + resp.error, 'error');
   }
+}
+
+// ─── Import/Export ─────────────────────────────────────────────────────────────
+function setupImportExport() {
+  document.getElementById('export-tags-btn')?.addEventListener('click', async () => {
+    const resp = await api.get('/api/export');
+    if (!resp.success) { showToast('导出失败', 'error'); return; }
+    const blob = new Blob([JSON.stringify(resp.data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `modelhub-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('导出成功', 'success');
+  });
+
+  const importFile = document.getElementById('import-file');
+  document.getElementById('import-tags-btn')?.addEventListener('click', () => importFile.click());
+  importFile?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const resp = await api.post('/api/import', data);
+      if (resp.success) {
+        showToast(`导入成功: ${resp.data.imported_tags} 个标签`, 'success');
+        await loadTags();
+        await loadInstalledModels();
+      } else {
+        showToast('导入失败', 'error');
+      }
+    } catch {
+      showToast('无效的 JSON 文件', 'error');
+    }
+    importFile.value = '';
+  });
+}
+
+// ─── Queue Controls ─────────────────────────────────────────────────────────────
+let queuePaused = false;
+
+function setupQueueControls() {
+  document.getElementById('queue-pause-btn')?.addEventListener('click', async () => {
+    const resp = await api.post('/api/queue/pause', {});
+    if (resp.success) {
+      queuePaused = true;
+      document.getElementById('queue-pause-btn').style.display = 'none';
+      document.getElementById('queue-resume-btn').style.display = 'inline-block';
+      showToast('下载队列已暂停', '');
+    }
+  });
+
+  document.getElementById('queue-resume-btn')?.addEventListener('click', async () => {
+    const resp = await api.post('/api/queue/resume', {});
+    if (resp.success) {
+      queuePaused = false;
+      document.getElementById('queue-pause-btn').style.display = 'inline-block';
+      document.getElementById('queue-resume-btn').style.display = 'none';
+      showToast('下载队列已恢复', 'success');
+    }
+  });
+}
+
+// ─── Recommendations ──────────────────────────────────────────────────────────
+async function loadRecommendations(name) {
+  const resp = await api.get(`/api/recommendations?name=${encodeURIComponent(name)}`);
+  if (!resp.success || !resp.data.length) return '';
+  return resp.data.map(m => `
+    <div class="model-card compact" style="cursor:pointer" onclick="showModelDetail('${m.name}')">
+      <div class="card-name" style="font-size:13px">${m.name}</div>
+      <div style="font-size:11px;color:var(--text-muted)">${m.parameters || ''} ${m.quantization || ''}</div>
+    </div>
+  `).join('');
 }
 
 // ─── Toast ─────────────────────────────────────────────────────────────────────

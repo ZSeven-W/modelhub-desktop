@@ -17,63 +17,88 @@ ModelHub-Desktop 是本地 LLM 模型管理器，支持浏览 Ollama 模型库�
 
 ### Model Discovery
 - Search/browse Ollama library models
-- Filter by parameter size (7B, 13B, 70B, etc.)
-- Filter by quantization (Q4, Q8, Q16, F16)
+- Filter by parameter size (7B, 8B, 13B, 33B, 70B, etc.)
+- Filter by quantization (Q4_K_M, Q4_K_S, Q5_K_M, Q8_0, Q16, F16)
+- Filter by tag (multi-select)
+- Filter by favorites toggle
 - Show model description and capabilities
+- Search history (recent searches saved)
 
 ### Model Download
-- Pull models with real-time progress
-- Download queue management
-- Resume interrupted downloads
+- Pull models with real-time SSE progress streaming
+- Download queue management (sequential, pause/resume)
+- Resume interrupted downloads (--resume flag)
 - Cancel active downloads
+- Download history (success/failed/cancelled)
 
 ### Model Management
 - List all installed Ollama models
-- Display: name, tag, size, parameters, quantization, path
+- Display: name, tag, size, parameters, quantization, path, context length
 - Delete models (with confirmation)
-- Refresh model list
+- Refresh model list (sync)
+- Sort by name, size, date, last used
 
 ### Model Organization
 - Create/manage custom tags with colors
 - Mark models as favorites
-- Search/filter installed models by name/tag
-- Sort by name, size, date installed
+- Multi-tag filtering on installed models
+- Sort by name, size, date, last used
 
 ### Model Info
 - View model metadata (full details from ollama show)
 - Display modelfile content
 - Show file location and size on disk
 - Model capabilities and parameters
+- Context length display
+- **Recommendations**: Similar models based on shared tags/parameters
 
 ### Quick Launch
 - One-click to open model in Terminal with ollama run
 - Copy ollama run command to clipboard
+- Record model usage (last used tracking)
 
 ### Storage Stats
 - Per-model disk usage
 - Total storage used by Ollama models
-- Visual storage breakdown
+- Visual storage breakdown (charts)
 
 ### Model Comparison
-- Side-by-side comparison of 2+ models
-- Compare: parameters, size, quantization, capabilities
+- Side-by-side comparison of 2-4 models
+- Compare: parameters, size, quantization, context length, capabilities
+- **Side-by-side modelfile comparison**
+
+### Data Management
+- Import/Export tags and favorites (JSON backup)
+- Backup and restore model organization
 
 ## REST API Endpoints
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/health | Health check |
 | GET | /api/models | List installed models |
+| GET | /api/models/enhanced | Enhanced list with tags, last_used, context_length |
 | POST | /api/models/pull | Pull a model |
+| POST | /api/models/pull/:name/cancel | Cancel download |
 | GET | /api/models/search | Search Ollama library |
+| GET | /api/search-history | Get recent search queries |
 | DELETE | /api/models/:name | Delete a model |
 | GET | /api/models/:name/info | Get model details |
 | GET | /api/models/:name/modelfile | Get modelfile |
 | POST | /api/models/:name/favorite | Toggle favorite |
+| GET | /api/recommendations | Get similar model recommendations |
+| GET | /api/models/compare-detailed | Compare with modelfile & full metadata |
+| POST | /api/models/compare | Compare models (basic) |
+| POST | /api/record-usage | Record model usage |
 | GET | /api/tags | List all tags |
 | POST | /api/tags | Create a tag |
 | DELETE | /api/tags/:id | Delete a tag |
 | GET | /api/storage | Get storage statistics |
-| POST | /api/models/compare | Compare models |
+| GET | /api/downloads | Get download history |
+| POST | /api/queue/pause | Pause download queue |
+| POST | /api/queue/resume | Resume download queue |
+| GET | /api/export | Export tags/favorites as JSON |
+| POST | /api/import | Import tags/favorites from JSON |
+| POST | /api/sync | Sync models from Ollama |
 | POST | /api/launch | Launch model in terminal |
 
 ## Database Schema (SQLite)
@@ -103,6 +128,26 @@ CREATE TABLE model_tags (
   PRIMARY KEY (model_id, tag_id),
   FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE CASCADE,
   FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+);
+
+CREATE TABLE downloads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  size TEXT,
+  status TEXT DEFAULT 'pending',
+  finished_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE search_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query TEXT NOT NULL,
+  searched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE model_usage (
+  model_name TEXT PRIMARY KEY,
+  last_used DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 

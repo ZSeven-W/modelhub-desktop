@@ -1045,3 +1045,33 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
+
+/* ─── Recommendations ─────────────────────────────────────────────────────────── */
+.model-card.compact {
+  padding: 8px 12px;
+  min-height: auto;
+}
+
+#recommendations-section {
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+#recommendations-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ─── Detail Actions ──────────────────────────────────────────────────────────── */
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ─── Compact Model Card ─────────────────────────────────────────────────────── */
+#recommendations-container .model-card.compact:hover {
+  border-color: var(--accent);
+}
